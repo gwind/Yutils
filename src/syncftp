@@ -6,3 +6,215 @@
 #         更新的文件到ftp服务器，最初我用来更新自己的网站。
 
 PROG_NAME=syncftp
+
+zh_CN=
+[ "$LANG" = "${LANG#*zh_CN}" ] || zh_CN=true
+
+
+# 一些变量
+CONFIG_FILE=
+DEFAULT_DIR=~/.syncftp
+
+
+# 加密工具，不同系统上不一样
+if test -x /usr/bin/md5sum; then
+    MD5_BIN=/usr/bin/md5sum
+elif test -x /sbin/md5; then
+    MD5_BIN=/sbin/md5
+fi
+
+if test -x /sbin/sha256; then
+    SHA1_BIN=/sbin/sha256
+elif test -x /usr/bin/sha1sum; then
+    SHA1_BIN=/usr/bin/sha1sum
+fi
+
+
+usage () {
+    if test -z $zh_CN; then
+        echo "Usage: $PROGRAM_NAME"
+        echo "Use following command to get help!"
+    else
+        echo "用法： $PROGRAM_NAME"
+        echo "使用下面命令得到帮助信息！"
+    fi
+    echo "$PROGRAM_NAME -h|--help"
+    exit 1
+}
+
+
+echo_help () {
+    if test -z $zh_CN; then
+        cat <<EOF
+Some help for $PROGRAM_NAME:
+-------------------------------------------
+EOF
+    else
+        cat <<EOF
+如何使用 $PROGRAM_NAME:
+----------------------------------
+EOF
+    fi
+    exit 0
+}
+
+
+# 将形如 "服务器=ftp://ylinux.org" 一行参数拆分为：PARM=服务器 ;
+# ARG=ftp://ylinux.org 。进一步判断 PARM 和 ftp_server 相符，就设置
+# ftp_server=$ARG
+do_line () {
+    echo "$1" | grep -q '^[[:space:]]*#' && return 1
+
+    ARG=${1#*=}
+    PARM=${1%%=*}
+
+    case $PARM in
+        服务器)
+            ftp_server=$ARG
+            ;;
+        用户)
+            ftp_user=$ARG
+            ;;
+        密码)
+            ftp_password=$ARG
+            ;;
+        本地目录)
+            local_dir=$ARG
+            ;;
+        远程目录)
+            remote_dir=$ARG
+            ;;
+        *)
+            test -z $zh_CN &&
+            echo "Unknown option : $PARAM" ||
+            echo "未知选项： $PARAM"
+    esac
+
+    return 0
+}
+
+
+# 如果指定了 CONFIG_FILE 配置文件，现在处理这个文件得到一些变量值，如果
+# 没有指定 CONFIG_FILE ，那么用处理默认的配置文件 $DEFAULT_DIR/config
+parse_config () {
+    if test -n "$CONFIG_FILE"; then
+        echo "Use config: $CONFIG_FILE"
+        while read line; do
+            do_line $line
+        done < $CONFIG_FILE
+    else
+        echo "Use default config: $DEFAULT_DIR/config"
+        while read line; do
+            do_line $line
+        done < $DEFAULT_DIR/config
+    fi
+}
+
+
+# 从第一个文件($1) 中读取一行中的文件名,再搜索第二个文件($2)，如果有相
+# 同文件名，计算两个文件中的校验值是否相等，不等就把这个文件当做更新文
+# 件放到 $local_dir/.syncftp/update。如果在没有搜索到也当做更新。
+gen_update_list () {
+    #$local_dir/.syncftp/cur_list
+    #$local_dir/.syncftp/latest
+    [ -f "$local_dir/.syncftp/update" ] && touch "$local_dir/.syncftp/update"
+    local line file new_md5 old_md5
+    while read line; do
+        file=`echo "$line"| awk '{print $2}' | cut -d'(' -f2 | cut -d')' -f1`
+        new_md5=`echo "$line"| awk '{print $4}'`
+        # 不管 $local_dir/.syncftp 目录下文件
+        if [ "$file" = "${file#$local_dir/.syncftp"} ]; then
+            if [ -f "$local_dir/.syncftp/latest" ]; then
+                old_md5=`grep $file $local_dir/.syncftp/latest | awk '{print $4}'`
+                if [ "$new_md5" != "$old_md5" ]; then
+                    echo $file >> $local_dir/.syncftp/update
+                fi
+            else
+                echo $file >> $local_dir/.syncftp/update
+            fi
+        fi
+    done < $1
+}
+
+# 处理命令行选项
+while test -n "$1";do
+    PARAM=$1
+    ARG=$2
+    shift
+
+    case $PARAM in
+        *-*=*)
+        ARG=${PARAM#*=}
+        PARAM=${PARAM%%=*}
+        set -- "--noarg=$PARAM" "$@"
+    esac
+
+    case $PARAM in
+        *-help|-h)
+            echo_help
+            ;;
+        -c)
+            CONFIG_FILE=$ARG
+            shift
+            ;;
+        *)
+            test -z $zh_CN &&
+            echo "Unknown arg : $PARAM" ||
+            echo "未知选项： $PARAM"
+            exit 2
+            ;;
+    esac
+done
+
+
+# 如果没有指定 CONFIG_FILE ，且 $CONFIG_FILE/config 文件不存在，则创建
+# 一个模板文件: ~/.syncftp/config ，并退出。
+if [ -z "$CONFIG_FILE" ] &&  [ ! -f $DEFAULT_DIR/config ]; then
+    [ -d "$DEFAULT_DIR" ] || mkdir -v $DEFAULT_DIR
+
+    cat > $DEFAULT_DIR/config<<EOF
+# syncftp 配置文件
+# http://ylinux.org
+服务器=
+用户=
+密码=
+本地目录=
+远程目录=
+EOF
+    
+    test -z $zh_CN &&
+    echo "Create $DEFAULT_DIR/config, please read it and configure it, then try again !" ||
+    echo "创建了 $DEFAULT_DIR/config 配置文件，请配置这个文件里的选项，在执行命令！"
+
+    exit 1
+fi
+
+# 粘贴配置文件
+parse_config
+
+# 如果命令指定了一些设置，那么将覆盖配置文件值
+
+# 生成本次校验库
+[ -d $local_dir/.syncftp ] || mkdir -v $local_dir/.syncftp
+find $local_dir -type f | xargs $SHA1_BIN > $local_dir/.syncftp/cur_list
+# 取得更新的文件列表
+gen_update_list $local_dir/.syncftp/cur_list $local_dir/.syncftp/latest
+
+
+# 保存latest 为 latest.XXX, cur_list 为 latest，update 为 update.`date
+# "+%Y%m%d%H%M%S"`
+bak_number=`date "+%Y%m%d%H%M%S"`
+[ -f $local_dir/.syncftp/latest ] && 
+mv $local_dir/.syncftp/latest $local_dir/.syncftp/latest.$bak_number
+[ -f $local_dir/.syncftp/cur_list ] &&
+mv $local_dir/.syncftp/cur_list $local_dir/.syncftp/latest
+[ -f $local_dir/.syncftp/update ] &&
+cp $local_dir/.syncftp/update $local_dir/.syncftp/update.$bak_number
+
+#echo "ftp_server=$ftp_server"
+#echo "ftp_user=$ftp_user"
+#echo "ftp_password=$ftp_password"
+#echo "local_dir=$local_dir"
+#echo "remote_dir=$remote_dir"
+
+exit 0
