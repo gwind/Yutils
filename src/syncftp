@@ -1,4 +1,5 @@
 #!/bin/sh
+##!/usr/bin/env bash
 
 # 名称：  syncftp
 # 作者：  Jian Lee <lijian.gnu@gmail.com>
@@ -123,9 +124,9 @@ gen_update_list () {
         file=`echo "$line"| awk '{print $2}' | cut -d'(' -f2 | cut -d')' -f1`
         new_md5=`echo "$line"| awk '{print $4}'`
         # 不管 $local_dir/.syncftp 目录下文件
-        if [ "$file" = "${file#$local_dir/.syncftp"} ]; then
+        if [ "$file" = "${file#*.syncftp"} ]; then
             if [ -f "$local_dir/.syncftp/latest" ]; then
-                old_md5=`grep $file $local_dir/.syncftp/latest | awk '{print $4}'`
+                old_md5=`grep "($file)" $local_dir/.syncftp/latest | awk '{print $4}'`
                 if [ "$new_md5" != "$old_md5" ]; then
                     echo $file >> $local_dir/.syncftp/update
                 fi
@@ -134,6 +135,19 @@ gen_update_list () {
             fi
         fi
     done < $1
+}
+
+clean_and_exit () {
+    [ "$CLEAN_CACHE" = "true" ] && {
+    /bin/rm -v $local_dir/.syncftp/update.*
+    /bin/rm -v $local_dir/.syncftp/latest.*
+    }
+
+#    [ -f "$DEFAULT_DIR/lftp-scripts.tmp" ] && 
+#    rm -v "$DEFAULT_DIR/lftp-scripts.tmp" || true
+
+    echo "Clean and exit !"
+    exit $1
 }
 
 # 处理命令行选项
@@ -156,6 +170,9 @@ while test -n "$1";do
         -c)
             CONFIG_FILE=$ARG
             shift
+            ;;
+        *-clean)
+            CLEAN_CACHE=true
             ;;
         *)
             test -z $zh_CN &&
@@ -191,11 +208,13 @@ fi
 
 # 粘贴配置文件
 parse_config
+[ "$local_dir" = "${local_dir%/}" ] && local_dir="$local_dir"/
 
 # 如果命令指定了一些设置，那么将覆盖配置文件值
 
 # 生成本次校验库
 [ -d $local_dir/.syncftp ] || mkdir -v $local_dir/.syncftp
+cat /dev/null > $local_dir/.syncftp/update
 find $local_dir -type f | xargs $SHA1_BIN > $local_dir/.syncftp/cur_list
 # 取得更新的文件列表
 gen_update_list $local_dir/.syncftp/cur_list $local_dir/.syncftp/latest
@@ -205,16 +224,28 @@ gen_update_list $local_dir/.syncftp/cur_list $local_dir/.syncftp/latest
 # "+%Y%m%d%H%M%S"`
 bak_number=`date "+%Y%m%d%H%M%S"`
 [ -f $local_dir/.syncftp/latest ] && 
-mv $local_dir/.syncftp/latest $local_dir/.syncftp/latest.$bak_number
+cp $local_dir/.syncftp/latest $local_dir/.syncftp/latest.$bak_number
 [ -f $local_dir/.syncftp/cur_list ] &&
-mv $local_dir/.syncftp/cur_list $local_dir/.syncftp/latest
+cp $local_dir/.syncftp/cur_list $local_dir/.syncftp/latest
 [ -f $local_dir/.syncftp/update ] &&
 cp $local_dir/.syncftp/update $local_dir/.syncftp/update.$bak_number
 
-#echo "ftp_server=$ftp_server"
-#echo "ftp_user=$ftp_user"
-#echo "ftp_password=$ftp_password"
-#echo "local_dir=$local_dir"
-#echo "remote_dir=$remote_dir"
+# 现在通过 update 文件用 lftp 上传到服务器
+sed -e "s@$local_dir@@" $local_dir/.syncftp/update > $DEFAULT_DIR/update
+#sed -i -e "s@\(.*\)@put $local_dir/\1 -o $remote_dir\1@" $local_dir/.syncftp/update
+sed -i -e "s@\(.*\)@mput -d \1@" $DEFAULT_DIR/update
 
-exit 0
+[ -f "$DEFAULT_DIR/lftp-scripts.tmp" ] && 
+/bin/rm -v "$DEFAULT_DIR/lftp-scripts.tmp" || true
+
+cat > $DEFAULT_DIR/lftp-scripts.tmp << EOF
+open "$ftp_user":"$ftp_password"@$ftp_server
+cd $remote_dir
+lcd $local_dir
+EOF
+
+cat $DEFAULT_DIR/update >> $DEFAULT_DIR/lftp-scripts.tmp
+
+lftp -f $DEFAULT_DIR/lftp-scripts.tmp
+
+clean_and_exit 0
