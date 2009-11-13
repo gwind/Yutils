@@ -116,26 +116,39 @@ parse_config () {
 # 同文件名，计算两个文件中的校验值是否相等，不等就把这个文件当做更新文
 # 件放到 $local_dir/.syncftp/update。如果在没有搜索到也当做更新。
 gen_update_list () {
-    #$local_dir/.syncftp/cur_list
-    #$local_dir/.syncftp/latest
-    [ -f "$local_dir/.syncftp/update" ] && touch "$local_dir/.syncftp/update"
-    local line file new_md5 old_md5
+
+    local line file new_md5 old_md5 LATEST
+
+    # $LATEST 存放最后一次文件校验值列表
+    if test -n $2; then
+        LATEST=$2
+    else
+        LATEST="$local_dir/.syncftp/latest"
+    fi
+    
+    [ -f "$local_dir/.syncftp/update" ] || \
+        touch "$local_dir/.syncftp/update"
+
+    # 如何 $LATEST 不存在，即认为第一次运行，所有文件为最新
+    if [ ! -f $LATEST ]; then
+        cat $1 | awk '{print $2}' > $local_dir/.syncftp/update
+        return 0
+    fi
+
     while read line; do
-        file=`echo "$line"| awk '{print $2}' | cut -d'(' -f2 | cut -d')' -f1`
-        new_md5=$(echo "$line"| awk '{print $4}')
+        file=$(echo "$line"| awk '{print $2}')
+        new_md5=$(echo "$line"| awk '{print $1}')
         # 不管 $local_dir/.syncftp 目录下文件
-        if [ "$file" = "${file#*.syncftp}" ]; then
-            if [ -f "$local_dir/.syncftp/latest" ]; then
-                old_md5=$(grep "($file)" $local_dir/.syncftp/latest | awk '{print $4}')
-                if [ "$new_md5" != "$old_md5" ]; then
-                    echo $file >> $local_dir/.syncftp/update
-                fi
-            else
-                echo $file >> $local_dir/.syncftp/update
-            fi
-        fi
+
+        old_md5=$(grep "$file" $LATEST | awk '{print $1}')
+        [ "$new_md5" != "$old_md5" ] && {
+            echo $file >> $local_dir/.syncftp/update
+            echo "Would update: $file"
+        }
+
     done < $1
 }
+
 
 clean_and_exit () {
     [ "$CLEAN_CACHE" = "true" ] && {
@@ -216,6 +229,10 @@ parse_config
 [ -d $local_dir/.syncftp ] || mkdir -v $local_dir/.syncftp
 cat /dev/null > $local_dir/.syncftp/update
 find $local_dir -type f | xargs $SHA1_BIN > $local_dir/.syncftp/cur_list
+
+# 去掉 $local_dir/.syncftp/ 下文件列表
+sed -i -e '\@/.syncftp/@d'  $local_dir/.syncftp/cur_list
+
 # 取得更新的文件列表
 gen_update_list $local_dir/.syncftp/cur_list $local_dir/.syncftp/latest
 
